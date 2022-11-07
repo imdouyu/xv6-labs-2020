@@ -440,3 +440,36 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+void
+vmprint_helper(pagetable_t pt, int depth)
+{
+  if(depth > 3){
+    return ;
+  }
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pt[i];
+    if(pte & PTE_V){
+      for(int j = 0; j < depth; j++) {
+        if(j != 0){
+          printf(" ");
+        }
+        printf("..");
+      }
+      // pte->物理地址
+      uint64 child = PTE2PA(pte);
+      printf("%d: pte %p pa %p\n", i, pte, child);
+      // 当pte被R/W/X某一位置位时, 表示pte为页表项, 终止递归
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        vmprint_helper((pagetable_t)child, depth + 1);
+      }
+    }
+  }
+}
+
+void
+vmprint(pagetable_t pt)
+{
+  printf("page table %p\n", pt);
+  vmprint_helper(pt, 1);
+}
