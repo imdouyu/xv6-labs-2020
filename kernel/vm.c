@@ -6,6 +6,10 @@
 #include "defs.h"
 #include "fs.h"
 
+// kernel/vm.c:178:23: error: dereferencing pointer to incomplete type 'struct proc'
+#include "spinlock.h"
+#include "proc.h"
+
 /*
  * the kernel's page table.
  */
@@ -45,6 +49,40 @@ kvminit()
   // map the trampoline for trap entry/exit to
   // the highest virtual address in the kernel.
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+}
+
+pagetable_t
+proc_kvminit()
+{
+  pagetable_t proc_kernel_pagetable = (pagetable_t) kalloc();
+  if(proc_kernel_pagetable == 0){
+    return 0;
+  }
+  memset(proc_kernel_pagetable, 0, PGSIZE);
+
+  // uart registers
+  proc_kvmmap(proc_kernel_pagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
+
+  // virtio mmio disk interface
+  proc_kvmmap(proc_kernel_pagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
+
+  // CLINT
+  proc_kvmmap(proc_kernel_pagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
+
+  // PLIC
+  proc_kvmmap(proc_kernel_pagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
+
+  // map kernel text executable and read-only.
+  proc_kvmmap(proc_kernel_pagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
+
+  // map kernel data and the physical RAM we'll make use of.
+  proc_kvmmap(proc_kernel_pagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
+
+  // map the trampoline for trap entry/exit to
+  // the highest virtual address in the kernel.
+  proc_kvmmap(proc_kernel_pagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
+
+  return proc_kernel_pagetable;
 }
 
 // Switch h/w page table register to the kernel's page table,
@@ -121,6 +159,13 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
     panic("kvmmap");
 }
 
+void
+proc_kvmmap(pagetable_t kernel_pt, uint64 va, uint64 pa, uint64 sz, int perm)
+{
+  if(mappages(kernel_pt, va, sz, pa, perm) != 0)
+    panic("proc_kvmmap");
+}
+
 // translate a kernel virtual address to
 // a physical address. only needed for
 // addresses on the stack.
@@ -131,12 +176,12 @@ kvmpa(uint64 va)
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
-  
-  pte = walk(kernel_pagetable, va, 0);
+
+  pte = walk(myproc()->kernel_pagetable, va, 0);
   if(pte == 0)
-    panic("kvmpa");
+    panic("kvmpa: here");
   if((*pte & PTE_V) == 0)
-    panic("kvmpa");
+    panic("kvmpa: pte is not valid");
   pa = PTE2PA(*pte);
   return pa+off;
 }
@@ -472,4 +517,19 @@ vmprint(pagetable_t pt)
 {
   printf("page table %p\n", pt);
   vmprint_helper(pt, 1);
+}
+
+// free a process's kernel page table
+void
+free_kernel_pagetable(pagetable_t pagetable)
+{
+  for (int i = 0; i < 512; i++) {
+    pte_t pte = pagetable[i];
+	if ((pte & PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) == 0) {
+      uint64 child = PTE2PA(pte);
+      free_kernel_pagetable((pagetable_t)child);
+      pagetable[i] = 0;
+	}
+  }
+  kfree((void*)pagetable);
 }
